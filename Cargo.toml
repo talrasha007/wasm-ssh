@@ -1,0 +1,18 @@
+[workspace]
+resolver = "2"
+members = [
+    "ssh-core",
+    "wasm-ssh-bindgen",
+    "ssh-core-testkit",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/tananlv/wasm-ssh"
+
+[profile.release]
+opt-level = "s"
+lto = true
+panic = "abort"

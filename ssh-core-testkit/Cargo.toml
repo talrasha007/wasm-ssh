@@ -1,0 +1,19 @@
+[package]
+name = "ssh-core-testkit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+ssh-core = { version = "0.1.0", path = "../ssh-core" }
+ssh-key = { version = "0.6.7", features = ["alloc", "std", "ed25519", "rsa", "rand_core"] }
+rand_core_06 = { package = "rand_core", version = "0.6.4" }
+signature = "2"
+
+[[bin]]
+name = "fake_sshd"
+path = "src/bin/fake_sshd.rs"
+
+[dev-dependencies]
+hex-literal = "1.1.0"

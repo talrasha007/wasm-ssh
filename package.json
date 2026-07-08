@@ -1,0 +1,41 @@
+{
+  "name": "wasm-ssh-client",
+  "version": "0.1.0",
+  "description": "SSHv2 client compiled to WebAssembly, for use in Cloudflare Workers and Pages Functions",
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./cloudflare": {
+      "types": "./dist/cloudflare.d.ts",
+      "import": "./dist/cloudflare.js"
+    },
+    "./node": {
+      "types": "./dist/node-adapter.d.ts",
+      "import": "./dist/node-adapter.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build:wasm": "cargo build -p wasm-ssh-bindgen --target wasm32-unknown-unknown --release && wasm-bindgen --target web --out-dir pkg --out-name ssh_wasm target/wasm32-unknown-unknown/release/wasm_ssh_bindgen.wasm",
+    "build:ts": "tsup",
+    "build": "npm run build:wasm && npm run build:ts",
+    "test:unit": "vitest run tests/unit",
+    "test:integration": "node tests/integration/run-password-auth-test.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^6.0.0",
+    "tsup": "^8.3.0",
+    "vitest": "^4.1.0",
+    "ssh2": "^1.16.0",
+    "wrangler": "^4.0.0",
+    "@types/node": "^22.0.0",
+    "@types/ssh2": "^1.15.0"
+  }
+}

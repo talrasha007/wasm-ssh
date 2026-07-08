@@ -1,0 +1,37 @@
+[package]
+name = "ssh-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Sans-io SSHv2 client protocol engine"
+
+[lib]
+name = "ssh_core"
+
+[dependencies]
+aes-gcm = { version = "0.11.0", default-features = false, features = ["aes", "alloc"] }
+chacha20poly1305 = { version = "0.11.0", default-features = false, features = ["alloc"] }
+crypto-bigint = { version = "0.7.5", default-features = false, features = ["alloc", "rand_core"] }
+hmac = "0.13.0"
+rsa = { version = "0.9.10", default-features = false, features = ["std", "sha2"] }
+sha2 = "0.11.0"
+# Must match ssh-key's own `signature` dependency (v2) exactly, since we call the
+# `Signer`/`Verifier` trait impls ssh-key provides on its own key/signature types -
+# a mismatched major version would be a *different* trait, and the calls wouldn't resolve.
+signature = "2"
+ssh-cipher = { version = "0.3.0", default-features = false, features = ["aes", "chacha20poly1305", "encoding"] }
+ssh-encoding = { version = "0.3.0", features = ["alloc"] }
+ssh-key = { version = "0.6.7", default-features = false, features = ["alloc", "std", "ed25519", "rsa", "rand_core"] }
+subtle = { version = "2.6.1", default-features = false }
+x25519-dalek = { version = "3.0.0", default-features = false, features = ["zeroize", "precomputed-tables"] }
+zeroize = "1.9.0"
+
+# Two rand_core major versions are needed because our crypto dependencies are split across them:
+# rsa/ssh-key depend on the 0.6 trait generation, x25519-dalek/crypto-bigint depend on 0.10.
+# ssh-core bridges both behind its own `SecureRandom` trait (see src/rng.rs) rather than picking one.
+rand_core_06 = { package = "rand_core", version = "0.6.4", default-features = false }
+rand_core_10 = { package = "rand_core", version = "0.10", default-features = false }
+base64ct = { version = "1.8.3", features = ["alloc"] }
+
+[dev-dependencies]
+hex-literal = "1.1.0"

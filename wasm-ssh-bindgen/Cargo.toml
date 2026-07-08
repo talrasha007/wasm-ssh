@@ -1,0 +1,28 @@
+[package]
+name = "wasm-ssh-bindgen"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+wasm-bindgen = "0.2"
+js-sys = "0.3"
+ssh-core = { version = "0.1.0", path = "../ssh-core" }
+
+# getrandom 0.4 is what our direct rand_core-0.10-based deps (x25519-dalek, crypto-bigint) resolve
+# to; wasm_js selects the crypto.getRandomValues() backend (paired with the --cfg
+# getrandom_backend="wasm_js" rustflag in .cargo/config.toml).
+getrandom = { version = "0.4", features = ["wasm_js"] }
+
+# getrandom 0.2 is pulled in transitively via rsa -> num-bigint-dig -> rand -> rand_core 0.6.
+# It's never called at runtime (RSA signing here is deterministic PKCS#1v1.5, no RNG needed),
+# but it still has to *compile* for wasm32-unknown-unknown, which requires its own "js" feature.
+# This is an unused direct dependency purely to force that feature on via Cargo feature
+# unification (any dependency enabling a feature on a given resolved version enables it for all
+# users of that version) - num-bigint-dig itself exposes no toggle for this.
+getrandom02 = { version = "0.2", package = "getrandom", features = ["js"] }
+ssh-key = { version = "0.6.7", features = ["alloc", "std", "ed25519", "rsa", "encryption"] }
+signature = "2"

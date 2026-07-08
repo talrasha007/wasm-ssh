@@ -1,0 +1,9 @@
+name = "wasm-ssh-exec-example"
+main = "index.js"
+compatibility_date = "2024-09-23"
+compatibility_flags = ["nodejs_compat"]
+
+# `SSH_HOST`, `SSH_PORT`, `SSH_USERNAME`, `SSH_PRIVATE_KEY_OR_PASSWORD`, `SSH_HOST_KEY_FINGERPRINT`,
+# and `SSH_COMMAND` are read from the environment at runtime - set them via `wrangler secret put`
+# (for the private key/password/fingerprint) and `[vars]` (for the rest), or `.dev.vars` for local
+# testing.

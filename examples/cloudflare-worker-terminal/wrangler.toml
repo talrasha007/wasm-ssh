@@ -1,0 +1,9 @@
+name = "wasm-ssh-terminal-example"
+main = "index.js"
+compatibility_date = "2024-09-23"
+compatibility_flags = ["nodejs_compat"]
+
+# `SSH_PRIVATE_KEY_OR_PASSWORD` (optional - see index.js), `SSH_USERNAME`, and `SSH_TARGET_HOST`
+# are read from the environment at runtime - set the former via
+# `wrangler secret put SSH_PRIVATE_KEY_OR_PASSWORD`, the rest via `[vars]` or `.dev.vars` for
+# local testing.

@@ -1,0 +1,22 @@
+{
+  "compilerOptions": {
+    // tsup's dts-bundling step (rollup-plugin-dts) always passes a `baseUrl` default when the
+    // consuming tsconfig doesn't set one, which TypeScript 6.0 treats as a hard error rather than
+    // a warning (TS5101) unless explicitly acknowledged. Not our own project setting up baseUrl.
+    "ignoreDeprecations": "6.0",
+    "target": "ES2022",
+    "module": "ES2022",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022", "DOM"],
+    "strict": true,
+    "declaration": true,
+    "declarationMap": true,
+    "outDir": "dist",
+    "rootDir": "src",
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "types": ["node"]
+  },
+  "include": ["src"]
+}

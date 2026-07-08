@@ -1,0 +1,9 @@
+name = "wasm-ssh-password-auth-integration-test"
+main = "index.js"
+compatibility_date = "2024-09-23"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+FAKE_SSHD_PORT = "2299"
+FAKE_SSHD_USERNAME = "bob"
+FAKE_SSHD_PASSWORD = "hunter2"
