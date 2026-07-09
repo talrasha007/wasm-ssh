@@ -1,6 +1,6 @@
 {
   "name": "wasm-ssh-client",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "SSHv2 client compiled to WebAssembly, for use in Cloudflare Workers and Pages Functions",
   "license": "Apache-2.0",
   "type": "module",
