@@ -82,13 +82,41 @@ pub struct PacketCipher {
 
 impl PacketCipher {
     /// `enc_key`/`iv` must be exactly [`CipherAlgorithm::kdf_material_len`] bytes each (`iv` is
-    /// empty for chacha20-poly1305@openssh.com).
+    /// empty for chacha20-poly1305@openssh.com). Starts the sequence-number counter at 0 - only
+    /// correct for tests exercising a cipher in isolation; [`Self::with_initial_seq`] is what
+    /// `session.rs` actually uses once real packets have already been exchanged.
     pub fn new(alg: CipherAlgorithm, enc_key: &[u8], iv: &[u8]) -> Self {
+        Self::with_initial_seq(alg, enc_key, iv, 0)
+    }
+
+    /// As [`Self::new`], but starts the per-direction sequence-number counter at `initial_seq`.
+    ///
+    /// RFC 4253 SS 6.4's sequence number is a single monotonic counter per direction for the
+    /// *whole connection* - it does not reset when a cipher activates. By the time NEWKEYS
+    /// activates encryption, each direction has already sent exactly 3 plaintext packets
+    /// (KEXINIT, KEX_ECDH_INIT/KEXDH_INIT, NEWKEYS), consuming sequence numbers 0-2, so the first
+    /// packet through the newly-activated cipher must use 3 - starting over at 0 (what a naive
+    /// `PacketCipher::new` does) desyncs the AEAD nonce from what a real peer expects, which a
+    /// strict server detects as a MAC/tag failure and closes the connection over, silently, with
+    /// no diagnostic. The in-repo fake server made the same seq=0 assumption on both ends of the
+    /// same bug, so this was only ever caught against a real `sshd`.
+    pub fn with_initial_seq(alg: CipherAlgorithm, enc_key: &[u8], iv: &[u8], initial_seq: u32) -> Self {
         let keys = match alg {
             CipherAlgorithm::ChaCha20Poly1305OpenSsh => {
                 assert_eq!(enc_key.len(), 64, "chacha20-poly1305@openssh.com needs 64 key bytes");
-                let k1 = ChaChaKey::try_from(&enc_key[0..32]).expect("32 bytes");
-                let k2 = ChaChaKey::try_from(&enc_key[32..64]).expect("32 bytes");
+                // PROTOCOL.chacha20poly1305: the *first* 256 bits of the 512-bit KDF output feed
+                // the main cipher (K_2 - encrypts payload+padding and derives the Poly1305
+                // one-time key), the *second* 256 bits feed the length-encrypting cipher (K_1).
+                // Confirmed against a real interoperating implementation (the `ssh2` npm
+                // package's `crypto.js`: `_encKeyMain = cipherKey.slice(0, 32)`, `_encKeyPktLen =
+                // cipherKey.slice(32)`) after this being swapped caused every real `sshd` to
+                // silently close the connection right after our first encrypted packet - it
+                // decrypts our length field with the wrong key half, reads garbage as the packet
+                // length, and aborts. Never caught locally: the in-repo fake server shared the
+                // same swapped assignment on both ends, so it was internally consistent, just
+                // wrong relative to the actual spec.
+                let k2 = ChaChaKey::try_from(&enc_key[0..32]).expect("32 bytes");
+                let k1 = ChaChaKey::try_from(&enc_key[32..64]).expect("32 bytes");
                 DirectionKeys::ChaCha20Poly1305 { k1, k2 }
             }
             CipherAlgorithm::Aes256GcmOpenSsh => {
@@ -99,7 +127,7 @@ impl PacketCipher {
                 DirectionKeys::Aes256Gcm { cipher, nonce }
             }
         };
-        Self { alg, keys, seq: 0 }
+        Self { alg, keys, seq: initial_seq }
     }
 
     pub fn algorithm(&self) -> CipherAlgorithm {
@@ -178,7 +206,7 @@ impl PacketCipher {
 /// `SSH_MSG_KEXINIT` exchange, before either side has sent `SSH_MSG_NEWKEYS`. No sequence-number
 /// state is needed since nothing here is keyed.
 pub fn seal_plaintext(payload: &[u8], rng: &mut impl SecureRandom) -> Vec<u8> {
-    let body = pad_payload(payload, 8, rng);
+    let body = pad_payload_with_prefix(payload, 8, 4, rng);
     let mut wire = Vec::with_capacity(4 + body.len());
     wire.extend_from_slice(&(body.len() as u32).to_be_bytes());
     wire.extend_from_slice(&body);
@@ -208,10 +236,27 @@ pub fn open_plaintext(wire_packet: &[u8]) -> Result<Vec<u8>> {
 }
 
 /// Build `padding_length(1) || payload || padding` with random padding, sized so the whole body
-/// is a multiple of `block_size` and padding is at least 4 bytes (RFC 4253 SS 6).
+/// is a multiple of `block_size` and padding is at least 4 bytes (RFC 4253 SS 6). Used by the
+/// AEAD ciphers below with no prefix (see [`pad_payload_with_prefix`] for why).
 pub(crate) fn pad_payload(payload: &[u8], block_size: usize, rng: &mut impl SecureRandom) -> Vec<u8> {
+    pad_payload_with_prefix(payload, block_size, 0, rng)
+}
+
+/// As [`pad_payload`], but sizes the body so that `prefix_len + body.len()` (not just
+/// `body.len()`) is a multiple of `block_size`.
+///
+/// RFC 4253 SS 6 requires the concatenation of `packet_length` (the 4-byte length field, sent
+/// *before* this body) `|| padding_length || payload || padding` to be block-aligned - "even when
+/// using stream ciphers" - so the plaintext pre-kex path (`seal_plaintext`) must pass `4` here.
+/// The AEAD ciphers below are the exception: RFC 5647 says GCM's padding covers only
+/// `padding_length || payload || padding` (the length field is unencrypted associated data, not
+/// part of the aligned region), and OpenSSH's chacha20-poly1305@openssh.com follows the same
+/// convention (verified against `chacha20poly1305_body_aead_matches_known_vector`'s reference
+/// packet, whose 24-byte body satisfies `body.len() % 8 == 0` but not `(4 + body.len()) % 8 ==
+/// 0`) - both pass `0`.
+fn pad_payload_with_prefix(payload: &[u8], block_size: usize, prefix_len: usize, rng: &mut impl SecureRandom) -> Vec<u8> {
     let unpadded_len = 1 + payload.len();
-    let mut padding_len = block_size - (unpadded_len % block_size);
+    let mut padding_len = block_size - ((prefix_len + unpadded_len) % block_size);
     if padding_len < MIN_PADDING {
         padding_len += block_size;
     }
@@ -494,5 +539,45 @@ mod tests {
         assert_eq!(total, wire.len());
 
         assert_eq!(open_plaintext(&wire).unwrap(), payload);
+    }
+
+    #[test]
+    fn with_initial_seq_continues_the_sequence_rather_than_restarting() {
+        // Regression test: chacha20-poly1305@openssh.com's nonce *is* the packet sequence
+        // number, so a `PacketCipher` seeded with `initial_seq` must produce exactly the same
+        // ciphertext a cipher that actually sent `initial_seq` dummy packets first would produce
+        // for its next packet - anything else desyncs the nonce from what a real peer expects.
+        // (Sealing dummy packets to *reach* seq 3 the long way, rather than asserting equality
+        // against a fixed vector, keeps this test agnostic to `seal`'s exact internals.)
+        let key = [0x11; 64];
+        let payload = b"SSH_MSG_NEWKEYS-adjacent payload".to_vec();
+
+        let mut advanced = PacketCipher::new(CipherAlgorithm::ChaCha20Poly1305OpenSsh, &key, &[]);
+        let mut rng = FixedRng(0x9);
+        for i in 0..3u8 {
+            advanced.seal(&std::vec![i; 4], &mut rng);
+        }
+        let expected = advanced.seal(&payload, &mut FixedRng(0x9));
+
+        let mut seeded = PacketCipher::with_initial_seq(CipherAlgorithm::ChaCha20Poly1305OpenSsh, &key, &[], 3);
+        let actual = seeded.seal(&payload, &mut FixedRng(0x9));
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn plaintext_wire_packet_is_block_aligned_including_length_field() {
+        // Regression test: a real OpenSSH server silently closes the connection if the *whole*
+        // wire packet (length field included) isn't a multiple of 8 - RFC 4253 SS 6 requires
+        // this "even when using stream ciphers", but `pad_payload` used to align only
+        // `padding_length || payload || padding`, four bytes short. Caught via a byte-for-byte
+        // interop test against a real `sshd`, not the in-repo fake server (which round-trips
+        // its own framing and never enforces this).
+        let mut rng = FixedRng(0x7);
+        for payload_len in 0..40 {
+            let payload = std::vec![0u8; payload_len];
+            let wire = seal_plaintext(&payload, &mut rng);
+            assert_eq!(wire.len() % 8, 0, "payload_len={payload_len}, wire.len()={}", wire.len());
+        }
     }
 }

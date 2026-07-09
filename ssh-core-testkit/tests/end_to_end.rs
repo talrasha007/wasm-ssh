@@ -111,6 +111,70 @@ fn full_handshake_password_auth_and_exec() {
     assert_eq!(server.last_exec_command.as_deref(), Some("echo hello"));
 }
 
+/// Regression test: a real server sending an unprompted `SSH_MSG_GLOBAL_REQUEST` right after
+/// auth (e.g. OpenSSH's `hostkeys-00@openssh.com`) used to be treated as a fatal, unhandled
+/// message type, killing the connection before it ever reached a channel. `FakeServer` never
+/// sent one, so only a real `sshd` ever exercised this path.
+#[test]
+fn unsolicited_global_request_after_auth_does_not_break_the_session() {
+    let mut session = Session::new(TestRng::new(3));
+    let mut server = FakeServer::new(4, "alice", "hunter2");
+    server.set_exec_output(b"hello from fake server\n");
+    server.send_global_request_after_auth(true);
+
+    let mut client_ident = Vec::new();
+    session.take_outgoing(&mut client_ident);
+    session.feed_incoming(&server.initial_outgoing());
+    let server_reply = server.feed(&client_ident);
+    if !server_reply.is_empty() {
+        session.feed_incoming(&server_reply);
+    }
+
+    pump(&mut session, &mut server);
+
+    let mut exec_channel = None;
+    let mut exit_code = None;
+    let mut closed = false;
+
+    for _ in 0..1000 {
+        match session.poll_event() {
+            Some(Event::HostKeyVerify { .. }) => {
+                session.provide_host_key_decision(true);
+                pump(&mut session, &mut server);
+            }
+            Some(Event::ReadyForAuth) => {
+                session.authenticate_password("alice", "hunter2");
+                pump(&mut session, &mut server);
+            }
+            Some(Event::AuthSuccess) => {
+                exec_channel = Some(session.open_exec("echo hello"));
+                pump(&mut session, &mut server);
+            }
+            Some(Event::ChannelOpened { .. }) | Some(Event::ChannelData { .. }) | Some(Event::ChannelEof { .. }) => {}
+            Some(Event::ChannelExitStatus { id, code, .. }) => {
+                assert_eq!(Some(id), exec_channel);
+                exit_code = code;
+            }
+            Some(Event::ChannelClosed { id }) => {
+                assert_eq!(Some(id), exec_channel);
+                closed = true;
+                break;
+            }
+            Some(Event::Unrecoverable(e)) => panic!("session failed: {e}"),
+            Some(other) => panic!("unexpected event in this flow (global request should be invisible): {other:?}"),
+            None => {
+                pump(&mut session, &mut server);
+                if closed {
+                    break;
+                }
+            }
+        }
+    }
+
+    assert_eq!(exit_code, Some(0));
+    assert!(closed, "channel never closed - global request likely broke the session");
+}
+
 #[test]
 fn wrong_password_is_reported_as_auth_failure_not_a_fatal_error() {
     let mut session = Session::new(TestRng::new(10));

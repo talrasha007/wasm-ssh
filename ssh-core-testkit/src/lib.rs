@@ -93,6 +93,7 @@ pub struct FakeServer {
     sc_cipher: Option<PacketCipher>,
 
     pub last_exec_command: Option<String>,
+    send_global_request_after_auth: bool,
 }
 
 impl FakeServer {
@@ -118,7 +119,16 @@ impl FakeServer {
             cs_cipher_pending: None,
             sc_cipher: None,
             last_exec_command: None,
+            send_global_request_after_auth: false,
         }
+    }
+
+    /// Simulates a real server unpromptedly sending an `SSH_MSG_GLOBAL_REQUEST` right after auth
+    /// succeeds (e.g. OpenSSH's `hostkeys-00@openssh.com`) - regression coverage for a client bug
+    /// where any unhandled message type was treated as a fatal protocol error, killing every
+    /// real-world connection at this exact point.
+    pub fn send_global_request_after_auth(&mut self, enabled: bool) {
+        self.send_global_request_after_auth = enabled;
     }
 
     pub fn set_exec_output(&mut self, output: &[u8]) {
@@ -196,6 +206,8 @@ impl FakeServer {
             ssh_core::auth::MSG_USERAUTH_REQUEST => self.handle_userauth_request(payload),
             channel::MSG_CHANNEL_OPEN => self.handle_channel_open(payload),
             channel::MSG_CHANNEL_REQUEST => self.handle_channel_request(payload),
+            // The client's reply to `send_global_request_after_auth`'s injected global request.
+            ssh_core::connection::MSG_REQUEST_FAILURE => Vec::new(),
             other => panic!("FakeServer received unexpected message type {other}"),
         }
     }
@@ -254,14 +266,19 @@ impl FakeServer {
         let cs_iv = kdf::derive(&k_mpint, &h, &h, kdf::TAG_IV_CLIENT_TO_SERVER, iv_len);
         let sc_key = kdf::derive(&k_mpint, &h, &h, kdf::TAG_ENC_KEY_SERVER_TO_CLIENT, key_len);
         let sc_iv = kdf::derive(&k_mpint, &h, &h, kdf::TAG_IV_SERVER_TO_CLIENT, iv_len);
-        self.cs_cipher_pending = Some(PacketCipher::new(alg, &cs_key, &cs_iv));
+        // Each direction has already sent exactly 3 plaintext packets (KEXINIT,
+        // KEX_ECDH_INIT/REPLY, NEWKEYS) by the time its own NEWKEYS activates encryption - RFC
+        // 4253 SS 6.4's sequence number is one continuous per-direction counter for the whole
+        // connection, not reset per cipher. See `PacketCipher::with_initial_seq`'s doc.
+        const PLAINTEXT_PACKETS_BEFORE_NEWKEYS: u32 = 3;
+        self.cs_cipher_pending = Some(PacketCipher::with_initial_seq(alg, &cs_key, &cs_iv, PLAINTEXT_PACKETS_BEFORE_NEWKEYS));
 
         self.phase = ServerPhase::AwaitingNewKeys;
 
         let mut out = packet::seal_plaintext(&reply, &mut self.rng);
         // Real servers send their own NEWKEYS immediately, without waiting for the client's.
         out.extend_from_slice(&packet::seal_plaintext(&[kexinit::MSG_NEWKEYS], &mut self.rng));
-        self.sc_cipher = Some(PacketCipher::new(alg, &sc_key, &sc_iv));
+        self.sc_cipher = Some(PacketCipher::with_initial_seq(alg, &sc_key, &sc_iv, PLAINTEXT_PACKETS_BEFORE_NEWKEYS));
         out
     }
 
@@ -317,7 +334,14 @@ impl FakeServer {
         };
 
         if ok {
-            self.seal(&[ssh_core::auth::MSG_USERAUTH_SUCCESS])
+            let mut out = self.seal(&[ssh_core::auth::MSG_USERAUTH_SUCCESS]);
+            if self.send_global_request_after_auth {
+                let mut req = std::vec![80u8]; // SSH_MSG_GLOBAL_REQUEST
+                write_string(&mut req, b"test-global-request@example.com");
+                write_bool(&mut req, true); // want_reply
+                out.extend_from_slice(&self.seal(&req));
+            }
+            out
         } else {
             let mut failure = std::vec![ssh_core::auth::MSG_USERAUTH_FAILURE];
             write_string(&mut failure, b"password,publickey");

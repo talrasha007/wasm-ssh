@@ -16,6 +16,14 @@ use crate::error::{Result, SshError};
 use crate::event::{DataStream, Event};
 use crate::wire::Reader;
 
+/// RFC 4254 SS 4: connection-global (not channel-scoped) requests, e.g. `tcpip-forward` or
+/// OpenSSH's `hostkeys-00@openssh.com`/`keepalive@openssh.com`. We don't implement any of these
+/// (out of scope - see crate docs), so `session.rs` just replies `MSG_REQUEST_FAILURE` when the
+/// peer wants a reply and otherwise ignores them, per spec, rather than treating an unhandled one
+/// as a fatal protocol error.
+pub const MSG_GLOBAL_REQUEST: u8 = 80;
+pub const MSG_REQUEST_FAILURE: u8 = 82;
+
 pub struct ChannelTable {
     channels: HashMap<u32, Channel>,
     next_id: u32,

@@ -266,6 +266,7 @@ impl<R: SecureRandom> Session<R> {
             | connection::channel::MSG_CHANNEL_REQUEST => self.handle_channel_message(msg_type, payload),
             connection::channel::MSG_CHANNEL_SUCCESS => self.handle_channel_success(payload),
             connection::channel::MSG_CHANNEL_FAILURE => self.handle_channel_failure(payload),
+            connection::MSG_GLOBAL_REQUEST => self.handle_global_request(payload),
             other => Err(SshError::UnexpectedMessage {
                 expected_state: "dispatch",
                 msg_type: other,
@@ -374,9 +375,16 @@ impl<R: SecureRandom> Session<R> {
         let sc_key = kdf::derive(&k_mpint, &h, &session_id, kdf::TAG_ENC_KEY_SERVER_TO_CLIENT, cs_key_len);
         let sc_iv = kdf::derive(&k_mpint, &h, &session_id, kdf::TAG_IV_SERVER_TO_CLIENT, cs_iv_len);
 
+        // Each direction has already sent exactly 3 plaintext packets by the time NEWKEYS
+        // activates encryption (KEXINIT, KEX_ECDH_INIT/KEXDH_INIT, NEWKEYS itself) - RFC 4253 SS
+        // 6.4's sequence number is one continuous per-direction counter for the whole connection,
+        // so the newly-activated cipher must carry on from 3, not restart at 0. See
+        // `PacketCipher::with_initial_seq`'s doc for why this matters (chacha20-poly1305's nonce
+        // *is* the sequence number) and how this went uncaught until tested against a real `sshd`.
+        const PLAINTEXT_PACKETS_BEFORE_NEWKEYS: u32 = 3;
         self.pending_ciphers = Some(DerivedCiphers {
-            cs: PacketCipher::new(alg, &cs_key, &cs_iv),
-            sc: PacketCipher::new(alg, &sc_key, &sc_iv),
+            cs: PacketCipher::with_initial_seq(alg, &cs_key, &cs_iv, PLAINTEXT_PACKETS_BEFORE_NEWKEYS),
+            sc: PacketCipher::with_initial_seq(alg, &sc_key, &sc_iv, PLAINTEXT_PACKETS_BEFORE_NEWKEYS),
         });
         self.session_id.get_or_insert(h.clone());
 
@@ -618,6 +626,22 @@ impl<R: SecureRandom> Session<R> {
         r.read_u8()?;
         let id = r.read_u32()?;
         self.continue_channel_setup(id, Some(false))
+    }
+
+    /// `SSH_MSG_GLOBAL_REQUEST` (RFC 4254 SS 4): `byte(80) || string request_name || boolean
+    /// want_reply || ...`. Real servers send these unprompted (e.g. OpenSSH's
+    /// `hostkeys-00@openssh.com` host-key announcement right after auth succeeds); we don't
+    /// implement any global request, so reply `MSG_REQUEST_FAILURE` when the peer wants a reply
+    /// and otherwise just drop it, per spec, rather than treating it as a fatal protocol error.
+    fn handle_global_request(&mut self, payload: &[u8]) -> Result<()> {
+        let mut r = crate::wire::Reader::new(payload);
+        r.read_u8()?;
+        r.read_string()?; // request name - ignored, we don't support any
+        let want_reply = r.read_bool()?;
+        if want_reply {
+            self.send_ciphered(&[connection::MSG_REQUEST_FAILURE]);
+        }
+        Ok(())
     }
 
     /// Drives a channel through its post-open setup (exec request, or pty-req then shell).
