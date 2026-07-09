@@ -387,6 +387,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e7c1832837b905bbfb5101e07cc24c8deddf52f93225eee6ead5f4d63d53ddcb"
 dependencies = [
  "const-oid 0.9.6",
+ "pem-rfc7468 0.7.0",
  "zeroize",
 ]
 
@@ -1332,6 +1333,7 @@ dependencies = [
  "getrandom 0.2.17",
  "getrandom 0.4.3",
  "js-sys",
+ "rsa",
  "signature",
  "ssh-core",
  "ssh-key",

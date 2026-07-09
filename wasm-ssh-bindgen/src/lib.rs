@@ -4,11 +4,13 @@
 //! [`WasmSshSession::take_event_data`] rather than embedded in the JSON, to avoid encoding
 //! arbitrary-length binary data as a JSON number array).
 
+use rsa::pkcs1::DecodeRsaPrivateKey;
+use rsa::pkcs8::DecodePrivateKey;
 use ssh_core::connection::pty::PtyOptions;
 use ssh_core::event::{DataStream, Event};
 use ssh_core::rng::SecureRandom;
 use ssh_core::session::Session;
-use ssh_key::private::PrivateKey;
+use ssh_key::private::{PrivateKey, RsaKeypair};
 use wasm_bindgen::prelude::*;
 
 struct WasmRng;
@@ -69,15 +71,17 @@ impl WasmSshSession {
         self.inner.authenticate_password(username, password);
     }
 
-    /// `private_key_openssh` is an OpenSSH-formatted private key (`-----BEGIN OPENSSH PRIVATE
-    /// KEY-----...`), optionally passphrase-encrypted.
+    /// `private_key_pem` is a PEM-armored private key: the modern OpenSSH format (`-----BEGIN
+    /// OPENSSH PRIVATE KEY-----...`, optionally passphrase-encrypted) or a legacy unencrypted
+    /// RSA format (PKCS#1 `RSA PRIVATE KEY` or PKCS#8 `PRIVATE KEY`) - see
+    /// [`parse_private_key`].
     pub fn authenticate_publickey(
         &mut self,
         username: &str,
-        private_key_openssh: &str,
+        private_key_pem: &str,
         passphrase: Option<String>,
     ) -> Result<(), JsValue> {
-        let mut key = PrivateKey::from_openssh(private_key_openssh).map_err(to_js_error)?;
+        let mut key = parse_private_key(private_key_pem).map_err(|e| JsValue::from_str(&e))?;
         if key.is_encrypted() {
             let passphrase = passphrase
                 .ok_or_else(|| JsValue::from_str("private key is encrypted but no passphrase was provided"))?;
@@ -207,4 +211,61 @@ fn json_str(s: &str) -> String {
 
 fn to_js_error<E: std::fmt::Display>(e: E) -> JsValue {
     JsValue::from_str(&e.to_string())
+}
+
+/// `PrivateKey::from_openssh` only recognizes the modern `OPENSSH PRIVATE KEY` PEM label. Older
+/// RSA keys - anything `ssh-keygen -m PEM` or `openssl genrsa`/`openssl pkcs8` produces - are
+/// armored as PKCS#1 (`RSA PRIVATE KEY`) or PKCS#8 (`PRIVATE KEY`) instead, so fall back to
+/// decoding those directly and re-wrapping the result as an `ssh_key::PrivateKey`. Only
+/// unencrypted legacy keys are handled: their encryption (`Proc-Type: 4,ENCRYPTED`/DEK-Info for
+/// PKCS#1, `ENCRYPTED PRIVATE KEY` for PKCS#8) is a different scheme from OpenSSH's, and isn't
+/// supported here.
+///
+/// Returns a plain `String` error rather than `JsValue` so this stays unit-testable on a native
+/// target - `JsValue` panics unconditionally off wasm32 (see `wasm_bindgen::JsValue::from_str`).
+/// The one caller converts to `JsValue` at the actual wasm boundary.
+fn parse_private_key(pem: &str) -> Result<PrivateKey, String> {
+    if let Ok(key) = PrivateKey::from_openssh(pem) {
+        return Ok(key);
+    }
+    if pem.contains("BEGIN RSA PRIVATE KEY") {
+        let rsa_key = rsa::RsaPrivateKey::from_pkcs1_pem(pem).map_err(|e| e.to_string())?;
+        return Ok(PrivateKey::from(RsaKeypair::try_from(rsa_key).map_err(|e| e.to_string())?));
+    }
+    if pem.contains("BEGIN PRIVATE KEY") {
+        let rsa_key = rsa::RsaPrivateKey::from_pkcs8_pem(pem).map_err(|e| e.to_string())?;
+        return Ok(PrivateKey::from(RsaKeypair::try_from(rsa_key).map_err(|e| e.to_string())?));
+    }
+    // Not a recognized legacy format either - surface the original OpenSSH-parse error, the most
+    // informative one for the common case (a typo'd or truncated OpenSSH key).
+    PrivateKey::from_openssh(pem).map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Throwaway 2048-bit RSA key generated solely for this test (`ssh-keygen -t rsa -m PEM`
+    // for PKCS#1, then `openssl pkcs8 -topk8 -nocrypt` for PKCS#8) - not used anywhere else.
+    const TEST_KEY_PKCS1: &str = include_str!("../testdata/test_rsa_pkcs1.pem");
+    const TEST_KEY_PKCS8: &str = include_str!("../testdata/test_rsa_pkcs8.pem");
+
+    #[test]
+    fn parses_legacy_pkcs1_rsa_key() {
+        let key = parse_private_key(TEST_KEY_PKCS1).expect("PKCS#1 key should parse");
+        assert!(!key.is_encrypted());
+        assert_eq!(key.algorithm().to_string(), "ssh-rsa");
+    }
+
+    #[test]
+    fn parses_legacy_pkcs8_rsa_key() {
+        let key = parse_private_key(TEST_KEY_PKCS8).expect("PKCS#8 key should parse");
+        assert!(!key.is_encrypted());
+        assert_eq!(key.algorithm().to_string(), "ssh-rsa");
+    }
+
+    #[test]
+    fn rejects_garbage_input_with_typed_error_not_panic() {
+        assert!(parse_private_key("not a key at all").is_err());
+    }
 }

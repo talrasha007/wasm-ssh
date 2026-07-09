@@ -26,3 +26,9 @@ getrandom = { version = "0.4", features = ["wasm_js"] }
 getrandom02 = { version = "0.2", package = "getrandom", features = ["js"] }
 ssh-key = { version = "0.6.7", features = ["alloc", "std", "ed25519", "rsa", "encryption"] }
 signature = "2"
+
+# ssh-key depends on rsa too, but without its "pem" feature (only "sha2"); pulled in directly
+# here to decode legacy PKCS#1/PKCS#8-armored RSA keys (`from_openssh` only accepts the modern
+# "OPENSSH PRIVATE KEY" label) - Cargo unifies this with ssh-key's rsa dependency rather than
+# building a second copy.
+rsa = { version = "0.9", default-features = false, features = ["pem"] }
